@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Prevent text selection on mobile for better UX */
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+  /* Use safe area for mobile devices */
+  height: 100dvh; /* Dynamic viewport height for mobile */
+  /* Prevent scrolling issues on mobile */
+  overflow: hidden;
+  position: fixed;
+}
+
+/* Mobile-specific improvements */
+@media (max-width: 640px) {
+  /* Better safe area support for notched devices */
+  #root {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  
+  /* Better touch targets */
+  button, a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Prevent zoom on input focus (iOS) */
+  input, textarea, select {
+    font-size: 16px;
+  }
+  
+  /* Better scrolling */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  /* Ensure bottom controls are always visible */
+  .controls-container {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 9999 !important;
+    width: 100% !important;
+    background-color: #1f2937 !important;
+    box-shadow: 0 -4px 6px -1px rgba(0, 0, 0, 0.3) !important;
+  }
+  
+  /* Add padding to content area to prevent overlap with controls */
+  .meeting-content {
+    padding-bottom: 90px !important;
+  }
+  
+  /* Ensure video grid doesn't overflow */
+  .meeting-content > div {
+    max-height: calc(100vh - 90px);
+  }
+}
+
+/* Improve video rendering on mobile */
+video {
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+/* Ensure captions are visible on mobile */
+@media (max-width: 640px) {
+  .video-player-container {
+    position: relative;
+  }
+  
+  /* Make sure captions container is above name label */
+  .video-player-container > div[class*="absolute"][class*="bottom-"] {
+    z-index: 30 !important;
+  }
+  
+  /* Ensure captions have enough contrast - target any black background divs */
+  .video-player-container > div[class*="absolute"] > div[class*="bg-black"] {
+    background-color: rgba(0, 0, 0, 0.95) !important;
+  }
+  
+  /* Ensure chat input is accessible on mobile */
+  #chat-input {
+    font-size: 16px !important; /* Prevent iOS zoom */
+    min-height: 44px !important; /* Better touch target */
+    padding: 12px !important;
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 8px;
+  }
+  
+  /* Ensure chat sidebar input container is above controls */
+  aside[class*="fixed"] {
+    z-index: 10000 !important;
+  }
+  
+  /* Chat input container should have proper spacing */
+  aside[class*="fixed"] > div:last-child {
+    padding-bottom: 80px !important;
+    position: relative;
+    z-index: 10001 !important;
+  }
+}
