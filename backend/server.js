@@ -29,12 +29,12 @@ let useHttps = false;
 
 try {
   // Phone Hotspot - ACTIVE
-  //const keyPath = path.resolve(__dirname, '10.199.210.137-key.pem');
-  //const certPath = path.resolve(__dirname, '10.199.210.137.pem');
+  const keyPath = path.resolve(__dirname, '10.199.210.137-key.pem');
+  const certPath = path.resolve(__dirname, '10.199.210.137.pem');
   
   // WiFi Network - COMMENTED OUT
-  const keyPath = path.resolve(__dirname, '192.168.1.4-key.pem');
-  const certPath = path.resolve(__dirname, '192.168.1.4.pem');
+  //const keyPath = path.resolve(__dirname, '192.168.1.4-key.pem');
+  //const certPath = path.resolve(__dirname, '192.168.1.4.pem');
   
   if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
     httpsOptions = {
@@ -61,20 +61,20 @@ const SERVER_PORT = process.env.PORT || 3001;
 
 // Frontend URLs allowed for CORS
 // Phone Hotspot - ACTIVE
-//const FRONTEND_URL = process.env.FRONTEND_URL || 'https://10.199.210.137';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://10.199.210.137';
 // WiFi Network - COMMENTED OUT
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://192.168.1.4:5173';
+//const FRONTEND_URL = process.env.FRONTEND_URL || 'https://192.168.1.4:5173';
 
 const FRONTEND_URLS = [
   FRONTEND_URL,
   'http://localhost:5173',
   'https://localhost:5173',
   // Phone Hotspot - ACTIVE
-  //'http://10.199.210.137:5173',
-  //'https://10.199.210.137:5173',
+  'http://10.199.210.137:5173',
+  'https://10.199.210.137:5173',
   // WiFi Network - COMMENTED OUT
-  'http://192.168.1.4:5173',
-  'https://192.168.1.4:5173'
+  //'http://192.168.1.4:5173',
+  //'https://192.168.1.4:5173'
 ];
 
 // Python sign language service (always runs on the backend machine)

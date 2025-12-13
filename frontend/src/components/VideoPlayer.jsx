@@ -65,7 +65,7 @@ const VideoPlayer = ({ stream, userName, isLocal, videoRef, caption = '' }) => {
   }, [stream, videoRef, userName, isLocal]);
 
   return (
-    <div className="relative bg-gray-800 rounded-lg overflow-hidden aspect-video sm:aspect-video h-[180px] sm:h-auto min-h-[180px] sm:min-h-[240px] video-player-container m-1 sm:m-2">
+    <div className="relative bg-gray-800 rounded-lg overflow-hidden aspect-video sm:aspect-video h-[180px] sm:h-auto min-h-[180px] sm:min-h-[240px] video-player-container">
       <video
         ref={videoRef || videoElementRef}
         autoPlay

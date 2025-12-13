@@ -15,17 +15,17 @@ export default defineConfig({
   plugins: [react()],
   server: {
     // Phone Hotspot - ACTIVE
-    //host: '10.199.210.137',
+    host: '10.199.210.137',
     // WiFi Network - COMMENTED OUT
-    host: '192.168.1.4',
+    //host: '192.168.1.4',
     port: 5173,
     https: {
       // Phone Hotspot - ACTIVE
-      //key: fs.readFileSync(path.resolve(__dirname, '10.199.210.137-key.pem')),
-      //cert: fs.readFileSync(path.resolve(__dirname, '10.199.210.137.pem')),
+      key: fs.readFileSync(path.resolve(__dirname, '10.199.210.137-key.pem')),
+      cert: fs.readFileSync(path.resolve(__dirname, '10.199.210.137.pem')),
       // WiFi Network - COMMENTED OUT
-      key: fs.readFileSync(path.resolve(__dirname, '192.168.1.4-key.pem')),
-      cert: fs.readFileSync(path.resolve(__dirname, '192.168.1.4.pem')),
+      //key: fs.readFileSync(path.resolve(__dirname, '192.168.1.4-key.pem')),
+      //cert: fs.readFileSync(path.resolve(__dirname, '192.168.1.4.pem')),
     },
   },
 })

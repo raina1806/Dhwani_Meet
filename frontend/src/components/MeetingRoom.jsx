@@ -42,6 +42,7 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
   const stablePredictionRef = useRef(''); // Currently stable prediction
   const stablePredictionStartTimeRef = useRef(null); // When current stable prediction started
   const signLanguageSequenceRef = useRef(''); // Ref to track current sequence for immediate access
+  const signLanguageSentenceRef = useRef([]); // Ref to track current sentence for immediate access
 
   useEffect(() => {
     let localStreamTemp = null;
@@ -789,10 +790,14 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
     return word;
   };
 
-  // Keep ref in sync with state (for cases where state is updated outside the main flow)
+  // Keep refs in sync with state (for cases where state is updated outside the main flow)
   useEffect(() => {
     signLanguageSequenceRef.current = signLanguageSequence;
   }, [signLanguageSequence]);
+
+  useEffect(() => {
+    signLanguageSentenceRef.current = signLanguageSentence;
+  }, [signLanguageSentence]);
 
   // Convert sequence to text when sequence changes
   useEffect(() => {
@@ -809,20 +814,22 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
   // Broadcast sign language sequence, text, and sentence to all participants
   useEffect(() => {
     if (signLanguageEnabled && socketRef.current && roomId && socketRef.current.connected) {
+      // Use ref for sentence to ensure we always have the latest value (state might be stale)
+      const currentSentence = signLanguageSentenceRef.current || signLanguageSentence || [];
       // Always send the current sequence, text, and sentence (even if empty, to clear remote displays)
       socketRef.current.emit('sign-language', {
         roomId,
         sequence: signLanguageSequence || '',
         text: signLanguageText || '',
-        sentence: signLanguageSentence || [],
+        sentence: currentSentence,
         userName,
         userId: userIdRef.current
       });
-      if (signLanguageSequence || signLanguageSentence.length > 0) {
+      if (signLanguageSequence || currentSentence.length > 0) {
         console.log('[Sign Language] Broadcasting to participants:', { 
           sequence: signLanguageSequence, 
           text: signLanguageText,
-          sentence: signLanguageSentence 
+          sentence: currentSentence 
         });
       }
     }
@@ -876,25 +883,30 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
           const wordToCommit = currentSequence.replace(/\s+/g, '');
           console.log('[Sign Language] Spacebar pressed! Committing sequence:', wordToCommit, 'from state:', signLanguageSequence, 'from ref:', signLanguageSequenceRef.current);
           
-          // Add sequence to sentence (without spaces) and immediately broadcast
-          setSignLanguageSentence((prev) => {
-            const newSentence = [...prev, wordToCommit];
-            
-            // Immediately broadcast the updated sentence to all participants
-            if (socketRef.current && roomId && socketRef.current.connected) {
-              console.log('[Sign Language] Broadcasting updated sentence immediately:', newSentence);
-              socketRef.current.emit('sign-language', {
-                roomId,
-                sequence: '', // Clear sequence after commit
-                text: '',
-                sentence: newSentence,
-                userName,
-                userId: userIdRef.current
-              });
-            }
-            
-            return newSentence;
-          });
+          // Get current sentence from ref (most up-to-date)
+          const currentSentence = signLanguageSentenceRef.current || signLanguageSentence;
+          
+          // Add sequence to sentence (without spaces)
+          const newSentence = [...currentSentence, wordToCommit];
+          
+          // Update ref immediately
+          signLanguageSentenceRef.current = newSentence;
+          
+          // Update state
+          setSignLanguageSentence(newSentence);
+          
+          // Immediately broadcast the updated sentence to all participants
+          if (socketRef.current && roomId && socketRef.current.connected) {
+            console.log('[Sign Language] Broadcasting updated sentence immediately:', newSentence);
+            socketRef.current.emit('sign-language', {
+              roomId,
+              sequence: '', // Clear sequence after commit
+              text: '',
+              sentence: newSentence,
+              userName,
+              userId: userIdRef.current
+            });
+          }
           
           // Clear the sequence and text for next word
           setSignLanguageSequence('');
@@ -913,6 +925,11 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
       if (event.code === 'Escape') {
         event.preventDefault();
         console.log('[Sign Language] Escape pressed! Clearing sentence');
+        
+        // Update ref immediately
+        signLanguageSentenceRef.current = [];
+        
+        // Update state
         setSignLanguageSentence([]);
         
         // Immediately broadcast the cleared sentence to all participants
@@ -1588,7 +1605,7 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
                 roomId,
                 sequence: '',
                 text: '',
-                sentence: signLanguageSentence || [],
+                sentence: signLanguageSentenceRef.current || [],
                 userName,
                 userId: userIdRef.current
               });
@@ -1792,7 +1809,7 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
       <div className="flex-1 p-2 sm:p-4 overflow-hidden meeting-content">
         <div className="flex flex-col lg:flex-row gap-2 sm:gap-4 h-full max-w-7xl mx-auto">
           <div className="flex-1 overflow-auto min-h-0 pb-20 sm:pb-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 lg:gap-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
               {allParticipants.map((participant) => {
                 // For local user, use socket.id if available, otherwise try both 'local' and socket.id
                 // For remote users, use their socketId
