@@ -328,6 +328,8 @@ if __name__ == '__main__':
         sys.exit(1)
     
     # Start Flask server
+    # Bind to 0.0.0.0 so the Node backend (and optionally other devices on the LAN)
+    # can reach this service using the machine's WiFi / hotspot IP.
     print("[INFO] Starting Sign Language Recognition Service...")
-    print("[INFO] Server running on http://localhost:5000")
-    app.run(host='localhost', port=5000, debug=False)
+    print("[INFO] Server running on http://0.0.0.0:5000 (accessible from localhost and LAN IP)")
+    app.run(host='0.0.0.0', port=5000, debug=False)

@@ -20,7 +20,8 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
   const [signLanguageCaption, setSignLanguageCaption] = useState(''); // Current sign language prediction
   const [signLanguageSequence, setSignLanguageSequence] = useState(''); // Accumulated sign language sequence
   const [signLanguageText, setSignLanguageText] = useState(''); // Converted text from sequence
-  const [remoteSignLanguage, setRemoteSignLanguage] = useState(new Map()); // Map of socketId -> {sequence, text, userName}
+  const [signLanguageSentence, setSignLanguageSentence] = useState([]); // Array of committed words
+  const [remoteSignLanguage, setRemoteSignLanguage] = useState(new Map()); // Map of socketId -> {sequence, text, sentence, userName}
 
   const socketRef = useRef(null);
   const peersRef = useRef(new Map());
@@ -34,11 +35,13 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
   const recognitionRef = useRef(null);
   const captionTimeoutRef = useRef(new Map()); // Store timeout refs for clearing captions
   const signLanguageIntervalRef = useRef(null); // Interval for capturing frames
-  const lastSignLanguagePredictionRef = useRef(''); // Last prediction to avoid duplicates
+  const lastSignLanguagePredictionRef = useRef(''); // Last prediction that was added to sequence
+  const lastAddedLetterRef = useRef(''); // Last letter that was actually added to sequence (to allow duplicates after instability)
   const signLanguageUpdateTimeoutRef = useRef(null); // Timeout for updating sequence
   const predictionHistoryRef = useRef([]); // Track recent predictions for stability check
   const stablePredictionRef = useRef(''); // Currently stable prediction
   const stablePredictionStartTimeRef = useRef(null); // When current stable prediction started
+  const signLanguageSequenceRef = useRef(''); // Ref to track current sequence for immediate access
 
   useEffect(() => {
     let localStreamTemp = null;
@@ -107,10 +110,27 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
         setLocalStream(stream);
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
+          console.log('[Sign Language] Video srcObject set, stream tracks:', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled })));
           // Ensure video plays on mobile
           localVideoRef.current.play().catch(err => {
             console.error('Error playing local video:', err);
           });
+          // Trigger a check for sign language recognition after video is set
+          // Use a small delay to ensure video element is ready
+          setTimeout(() => {
+            if (signLanguageEnabled && !signLanguageIntervalRef.current) {
+              console.log('[Sign Language] Video srcObject set, triggering recognition check');
+              // Force a re-check by dispatching a custom event or directly checking
+              const hasLocalStream = localStream || localStreamRef.current;
+              const hasLocalVideo = localVideoRef.current && localVideoRef.current.srcObject;
+              if (signLanguageEnabled && hasLocalVideo && videoEnabled && hasLocalStream) {
+                console.log('[Sign Language] Starting recognition after video setup');
+                signLanguageIntervalRef.current = setInterval(() => {
+                  captureFrameAndRecognize();
+                }, 500);
+              }
+            }
+          }, 500);
         }
 
         // Process any pending participants now that stream is ready
@@ -230,21 +250,22 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
       const socketId = data.socketId;
       const sequence = data.sequence || '';
       const text = data.text || '';
+      const sentence = data.sentence || [];
       const userName = data.userName || 'Anonymous';
       
       // Update remote sign language data
       setRemoteSignLanguage((prev) => {
         const next = new Map(prev);
-        if (sequence) {
-          next.set(socketId, { sequence, text, userName });
+        if (sequence || sentence.length > 0) {
+          next.set(socketId, { sequence, text, sentence, userName });
         } else {
-          // Clear if sequence is empty
+          // Clear if both sequence and sentence are empty
           next.delete(socketId);
         }
         return next;
       });
       
-      console.log('[Sign Language] Received from', userName, ':', { sequence, text });
+      console.log('[Sign Language] Received from', userName, ':', { sequence, text, sentence });
     });
 
     // Load chat history on join
@@ -768,6 +789,11 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
     return word;
   };
 
+  // Keep ref in sync with state (for cases where state is updated outside the main flow)
+  useEffect(() => {
+    signLanguageSequenceRef.current = signLanguageSequence;
+  }, [signLanguageSequence]);
+
   // Convert sequence to text when sequence changes
   useEffect(() => {
     if (signLanguageSequence) {
@@ -780,22 +806,41 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
     }
   }, [signLanguageSequence]);
 
-  // Broadcast sign language sequence and text to all participants
+  // Broadcast sign language sequence, text, and sentence to all participants
   useEffect(() => {
     if (signLanguageEnabled && socketRef.current && roomId && socketRef.current.connected) {
-      // Always send the current sequence and text (even if empty, to clear remote displays)
+      // Always send the current sequence, text, and sentence (even if empty, to clear remote displays)
       socketRef.current.emit('sign-language', {
         roomId,
         sequence: signLanguageSequence || '',
         text: signLanguageText || '',
+        sentence: signLanguageSentence || [],
         userName,
         userId: userIdRef.current
       });
-      if (signLanguageSequence) {
-        console.log('[Sign Language] Broadcasting to participants:', { sequence: signLanguageSequence, text: signLanguageText });
+      if (signLanguageSequence || signLanguageSentence.length > 0) {
+        console.log('[Sign Language] Broadcasting to participants:', { 
+          sequence: signLanguageSequence, 
+          text: signLanguageText,
+          sentence: signLanguageSentence 
+        });
       }
     }
-  }, [signLanguageSequence, signLanguageText, signLanguageEnabled, roomId, userName]);
+  }, [signLanguageSequence, signLanguageText, signLanguageSentence, signLanguageEnabled, roomId, userName]);
+
+  // Debug: Monitor sign language enabled state changes
+  useEffect(() => {
+    console.log('[Sign Language] signLanguageEnabled state changed to:', signLanguageEnabled);
+    console.log('[Sign Language] Current conditions:', {
+      signLanguageEnabled,
+      videoEnabled,
+      localStream: !!localStream,
+      localStreamRef: !!localStreamRef.current,
+      videoElement: !!localVideoRef.current,
+      videoSrcObject: !!(localVideoRef.current && localVideoRef.current.srcObject),
+      videoReadyState: localVideoRef.current ? localVideoRef.current.readyState : 'no element'
+    });
+  }, [signLanguageEnabled]);
 
   // Debug: Monitor sign language sequence changes
   useEffect(() => {
@@ -803,6 +848,93 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
       console.log('[Sign Language] Sequence state updated:', signLanguageSequence);
     }
   }, [signLanguageSequence, signLanguageEnabled]);
+
+  // Handle keyboard shortcuts for sign language
+  useEffect(() => {
+    if (!signLanguageEnabled) return;
+
+    const handleKeyDown = (event) => {
+      // Only handle keys when not typing in an input field
+      if (
+        event.target.tagName === 'INPUT' ||
+        event.target.tagName === 'TEXTAREA' ||
+        event.target.isContentEditable
+      ) {
+        return;
+      }
+
+      // Spacebar: Commit current word to sentence
+      if (event.code === 'Space') {
+        event.preventDefault();
+        
+        // Use ref to get the most up-to-date sequence (React state might be stale)
+        const currentSequence = signLanguageSequenceRef.current || signLanguageSequence;
+        
+        // Commit current sequence (letters before the arrow) if we have a sequence
+        if (currentSequence && currentSequence.trim()) {
+          // Remove all spaces from the sequence before committing
+          const wordToCommit = currentSequence.replace(/\s+/g, '');
+          console.log('[Sign Language] Spacebar pressed! Committing sequence:', wordToCommit, 'from state:', signLanguageSequence, 'from ref:', signLanguageSequenceRef.current);
+          
+          // Add sequence to sentence (without spaces) and immediately broadcast
+          setSignLanguageSentence((prev) => {
+            const newSentence = [...prev, wordToCommit];
+            
+            // Immediately broadcast the updated sentence to all participants
+            if (socketRef.current && roomId && socketRef.current.connected) {
+              console.log('[Sign Language] Broadcasting updated sentence immediately:', newSentence);
+              socketRef.current.emit('sign-language', {
+                roomId,
+                sequence: '', // Clear sequence after commit
+                text: '',
+                sentence: newSentence,
+                userName,
+                userId: userIdRef.current
+              });
+            }
+            
+            return newSentence;
+          });
+          
+          // Clear the sequence and text for next word
+          setSignLanguageSequence('');
+          signLanguageSequenceRef.current = '';
+          setSignLanguageText('');
+          lastSignLanguagePredictionRef.current = '';
+          lastAddedLetterRef.current = '';
+          predictionHistoryRef.current = [];
+          stablePredictionRef.current = '';
+          stablePredictionStartTimeRef.current = null;
+          setSignLanguageCaption('');
+        }
+      }
+      
+      // Escape: Clear entire sentence
+      if (event.code === 'Escape') {
+        event.preventDefault();
+        console.log('[Sign Language] Escape pressed! Clearing sentence');
+        setSignLanguageSentence([]);
+        
+        // Immediately broadcast the cleared sentence to all participants
+        if (socketRef.current && roomId && socketRef.current.connected) {
+          console.log('[Sign Language] Broadcasting cleared sentence immediately');
+          socketRef.current.emit('sign-language', {
+            roomId,
+            sequence: signLanguageSequence || '',
+            text: signLanguageText || '',
+            sentence: [],
+            userName,
+            userId: userIdRef.current
+          });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [signLanguageEnabled, signLanguageText]);
 
   const createPeerConnection = (socketId, isInitiator, remoteUserName = 'Remote User') => {
     // Check if peer connection already exists
@@ -1056,30 +1188,118 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
   };
 
   const handleToggleAudio = () => {
-    if (localStream) {
-      const audioTrack = localStream.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioEnabled;
-        setAudioEnabled(!audioEnabled);
-        socketRef.current.emit('toggle-audio', {
-          roomId,
-          audioEnabled: !audioEnabled
+    const nextAudioEnabled = !audioEnabled;
+    console.log(`[Audio Toggle] Changing audio state from ${audioEnabled} to ${nextAudioEnabled}`);
+
+    // Always update local UI state so the button reflects the intent,
+    // even if this device has no active audio track (e.g., permission denied).
+    setAudioEnabled(nextAudioEnabled);
+
+    // Collect all possible audio streams (local stream, screen share stream)
+    const streamsToUpdate = [];
+    if (localStream || localStreamRef.current) {
+      streamsToUpdate.push(localStream || localStreamRef.current);
+    }
+    if (screenSharing && screenStreamRef.current) {
+      streamsToUpdate.push(screenStreamRef.current);
+    }
+
+    // Update all audio tracks in all streams
+    let totalTracksUpdated = 0;
+    streamsToUpdate.forEach((stream, streamIndex) => {
+      if (stream) {
+        const audioTracks = stream.getAudioTracks();
+        console.log(`[Audio] Stream ${streamIndex} has ${audioTracks.length} audio track(s)`);
+        audioTracks.forEach((track, trackIndex) => {
+          const wasEnabled = track.enabled;
+          track.enabled = nextAudioEnabled;
+          totalTracksUpdated++;
+          console.log(`[Audio] Stream ${streamIndex}, Track ${trackIndex} (${track.id}): ${wasEnabled} -> ${track.enabled}, readyState: ${track.readyState}`);
         });
       }
+    });
+    
+    // Update tracks in all peer connections (this is critical for remote peers)
+    let totalSendersUpdated = 0;
+    peersRef.current.forEach((peer, socketId) => {
+      const senders = peer.getSenders();
+      console.log(`[Audio] Peer ${socketId} has ${senders.length} sender(s)`);
+      senders.forEach((sender, senderIndex) => {
+        if (sender.track && sender.track.kind === 'audio') {
+          const wasEnabled = sender.track.enabled;
+          sender.track.enabled = nextAudioEnabled;
+          totalSendersUpdated++;
+          console.log(`[Audio] Peer ${socketId}, Sender ${senderIndex} (${sender.track.id}): ${wasEnabled} -> ${sender.track.enabled}, readyState: ${sender.track.readyState}, muted: ${sender.track.muted}`);
+        } else if (sender.track) {
+          console.log(`[Audio] Peer ${socketId}, Sender ${senderIndex} is ${sender.track.kind}, skipping`);
+        } else {
+          console.log(`[Audio] Peer ${socketId}, Sender ${senderIndex} has no track`);
+        }
+      });
+    });
+
+    console.log(`[Audio Toggle] Updated ${totalTracksUpdated} stream track(s) and ${totalSendersUpdated} sender track(s)`);
+
+    // Notify other participants about audio state change
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('toggle-audio', {
+        roomId,
+        audioEnabled: nextAudioEnabled
+      });
+      console.log(`[Audio] Emitted toggle-audio event: ${nextAudioEnabled}`);
+    } else {
+      console.warn('[Audio] Socket not connected, cannot emit toggle-audio event');
     }
   };
 
   const handleToggleVideo = () => {
-    if (localStream) {
-      const videoTrack = localStream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoEnabled;
-        setVideoEnabled(!videoEnabled);
-        socketRef.current.emit('toggle-video', {
-          roomId,
-          videoEnabled: !videoEnabled
-        });
+    const nextVideoEnabled = !videoEnabled;
+
+    // Always update local UI state so the button reflects the intent,
+    // even if this device has no active video track.
+    setVideoEnabled(nextVideoEnabled);
+
+    // Determine which stream to update (screen share takes priority if active)
+    const streamToUpdate = screenSharing && screenStreamRef.current 
+      ? screenStreamRef.current 
+      : (localStream || localStreamRef.current);
+    
+    if (streamToUpdate) {
+      const videoTracks = streamToUpdate.getVideoTracks();
+      videoTracks.forEach(track => {
+        track.enabled = nextVideoEnabled;
+        console.log(`[Video] Track ${track.id} enabled: ${track.enabled}, readyState: ${track.readyState}`);
+      });
+    }
+    
+    // Update tracks in all peer connections (this is critical for remote peers)
+    peersRef.current.forEach((peer, socketId) => {
+      const senders = peer.getSenders();
+      senders.forEach(sender => {
+        if (sender.track && sender.track.kind === 'video') {
+          sender.track.enabled = nextVideoEnabled;
+          console.log(`[Video] Updated sender track in peer ${socketId}, enabled: ${nextVideoEnabled}, readyState: ${sender.track.readyState}`);
+        }
+      });
+    });
+    
+    // Update local video element visibility/display
+    if (localVideoRef.current) {
+      if (nextVideoEnabled) {
+        localVideoRef.current.style.opacity = '1';
+        localVideoRef.current.style.pointerEvents = 'auto';
+      } else {
+        // When video is disabled, show black screen or placeholder
+        localVideoRef.current.style.opacity = '0.3';
       }
+    }
+
+    // Notify other participants about video state change
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('toggle-video', {
+        roomId,
+        videoEnabled: nextVideoEnabled
+      });
     }
   };
 
@@ -1150,11 +1370,25 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
 
   // Capture frame from video and send for sign language recognition
   const captureFrameAndRecognize = async () => {
-    if (!localVideoRef.current || !signLanguageEnabled || !videoEnabled) {
+    // Check both state and ref for video stream
+    // Also check video element's srcObject directly - it might have the stream even if refs don't
+    const videoElement = localVideoRef.current;
+    const videoSrcObject = videoElement && videoElement.srcObject;
+    const hasLocalStream = localStream || localStreamRef.current || (videoSrcObject instanceof MediaStream);
+    
+    if (!videoElement || !signLanguageEnabled || !videoEnabled || !hasLocalStream) {
       return;
     }
 
-    const video = localVideoRef.current;
+    const video = videoElement;
+    
+    // Ensure video element has a valid stream
+    if (!video.srcObject) {
+      console.warn('[Sign Language] Video element has no srcObject');
+      return;
+    }
+    
+    // Ensure video is ready
     if (video.readyState !== video.HAVE_ENOUGH_DATA) {
       return;
     }
@@ -1195,15 +1429,35 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
       }
 
       // Send to backend for recognition
-      const response = await fetch(`${BACKEND_URL}/api/predict-sign`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ image: imageData }),
-      });
+      let response;
+      try {
+        response = await fetch(`${BACKEND_URL}/api/predict-sign`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ image: imageData }),
+        });
+      } catch (fetchError) {
+        console.error('[Sign Language] Network error calling prediction API:', fetchError);
+        // Don't show error for every frame, just log it
+        return;
+      }
 
-      const data = await response.json();
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Sign Language] API error (${response.status}):`, errorText);
+        // Only log, don't show error UI for every failed frame
+        return;
+      }
+
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('[Sign Language] Failed to parse response:', jsonError);
+        return;
+      }
 
       if (data.success && data.prediction) {
         const prediction = data.prediction.toUpperCase();
@@ -1245,38 +1499,45 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
           if (stableLetter && stableCount >= stabilityThreshold) {
             const now = Date.now();
             
-            // If this is a new stable prediction, reset the timer
-            if (stableLetter !== stablePredictionRef.current) {
+            // If this is a new stable prediction (different from current stable), reset the timer
+            // This allows the same letter to be added again if it was unstable and then stable again
+            const isNewStablePrediction = stableLetter !== stablePredictionRef.current;
+            if (isNewStablePrediction) {
               stablePredictionRef.current = stableLetter;
               stablePredictionStartTimeRef.current = now;
-              console.log('[Sign Language] New stable prediction detected:', stableLetter);
+              console.log('[Sign Language] New stable prediction detected:', stableLetter, 'Previous:', stablePredictionRef.current);
             }
             
             // Check if stable prediction has been stable for required duration
             const stableDuration = now - stablePredictionStartTimeRef.current;
             if (stableDuration >= STABILITY_DURATION_MS) {
-              // Prediction is stable for 3.5+ seconds, add it to sequence
-              if (stableLetter !== lastSignLanguagePredictionRef.current) {
+              // Prediction is stable for required duration
+              // Allow adding the letter if:
+              // 1. It's different from the last added letter, OR
+              // 2. It's a new stable prediction (user moved away and came back to same letter)
+              // This allows duplicate letters (like "EE" in "SEE") when user re-signs the same letter
+              const shouldAdd = stableLetter !== lastAddedLetterRef.current || isNewStablePrediction;
+              
+              if (shouldAdd) {
+                console.log('[Sign Language] Adding letter:', stableLetter, 'isNewStablePrediction:', isNewStablePrediction, 'lastAddedLetter:', lastAddedLetterRef.current);
                 lastSignLanguagePredictionRef.current = stableLetter;
+                lastAddedLetterRef.current = stableLetter;
                 
                 // Update sequence with stable prediction
                 setSignLanguageSequence((prev) => {
                   // If empty, just add the prediction
                   if (!prev) {
-                    console.log('[Sign Language] Starting new sequence:', stableLetter);
-                    return stableLetter;
-                  }
-                  
-                  // If last letter in sequence is different, add a space and new letter
-                  const lastLetter = prev.trim().split(' ').pop();
-                  if (lastLetter !== stableLetter) {
-                    const newSequence = prev + ' ' + stableLetter;
-                    console.log('[Sign Language] Updated sequence with stable letter:', newSequence);
+                    const newSequence = stableLetter;
+                    signLanguageSequenceRef.current = newSequence;
+                    console.log('[Sign Language] Starting new sequence:', newSequence);
                     return newSequence;
                   }
                   
-                  // If same letter, keep the sequence as is
-                  return prev;
+                  // Add a space and new letter (allow duplicates - same letter can be added if user re-signs it)
+                  const newSequence = prev + ' ' + stableLetter;
+                  signLanguageSequenceRef.current = newSequence;
+                  console.log('[Sign Language] Updated sequence with stable letter:', newSequence);
+                  return newSequence;
                 });
                 
                 // Reset stability timer for next letter
@@ -1294,10 +1555,15 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
               setSignLanguageCaption(`${stableLetter} (${Math.round(stableDuration / 1000)}s)`);
             }
           } else {
-            // No stable prediction yet, clear caption
+            // No stable prediction yet, clear caption and reset stable prediction
+            // This allows the same letter to be added again if user re-signs it
             setSignLanguageCaption('');
             stablePredictionRef.current = '';
             stablePredictionStartTimeRef.current = null;
+            // Reset both refs when prediction becomes unstable
+            // This allows duplicate letters when user moves away and comes back to the same letter
+            lastSignLanguagePredictionRef.current = '';
+            lastAddedLetterRef.current = ''; // Reset this too so same letter can be added again
           }
           
           // Reset timeout for clearing sequence
@@ -1307,18 +1573,22 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
           signLanguageUpdateTimeoutRef.current = setTimeout(() => {
             console.log('[Sign Language] Clearing sequence after timeout');
             setSignLanguageSequence('');
+            signLanguageSequenceRef.current = '';
             setSignLanguageCaption('');
             setSignLanguageText('');
+            // Note: Don't clear sentence on timeout - keep committed words
             lastSignLanguagePredictionRef.current = '';
+            lastAddedLetterRef.current = '';
             predictionHistoryRef.current = [];
             stablePredictionRef.current = '';
             stablePredictionStartTimeRef.current = null;
-            // Broadcast empty sequence to clear for remote participants
+            // Broadcast empty sequence to clear for remote participants (but keep sentence)
             if (socketRef.current && roomId && socketRef.current.connected) {
               socketRef.current.emit('sign-language', {
                 roomId,
                 sequence: '',
                 text: '',
+                sentence: signLanguageSentence || [],
                 userName,
                 userId: userIdRef.current
               });
@@ -1337,26 +1607,98 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
 
   // Effect to handle sign language recognition
   useEffect(() => {
-    if (signLanguageEnabled && localVideoRef.current && videoEnabled && localStream) {
-      // Start capturing frames every 500ms
-      signLanguageIntervalRef.current = setInterval(() => {
-        captureFrameAndRecognize();
-      }, 500);
-    } else {
-      // Clear interval if disabled
-      if (signLanguageIntervalRef.current) {
-        clearInterval(signLanguageIntervalRef.current);
-        signLanguageIntervalRef.current = null;
+    console.log('[Sign Language] useEffect triggered - signLanguageEnabled:', signLanguageEnabled, 'videoEnabled:', videoEnabled, 'localStream:', !!localStream);
+    
+    const checkAndStartRecognition = () => {
+      // Check both state and ref for localStream (ref might be set even if state isn't updated yet)
+      // Also check video element's srcObject directly - it might have the stream even if refs don't
+      const videoElement = localVideoRef.current;
+      const videoSrcObject = videoElement && videoElement.srcObject;
+      const hasLocalStream = localStream || localStreamRef.current || (videoSrcObject instanceof MediaStream);
+      const hasLocalVideo = videoElement && videoSrcObject;
+      
+      const conditions = {
+        signLanguageEnabled,
+        hasLocalVideo: !!hasLocalVideo,
+        videoEnabled,
+        hasLocalStream: !!hasLocalStream,
+        localStreamState: !!localStream,
+        localStreamRef: !!localStreamRef.current,
+        videoElement: !!videoElement,
+        videoSrcObject: !!videoSrcObject,
+        videoSrcObjectIsStream: videoSrcObject instanceof MediaStream,
+        videoReadyState: videoElement ? videoElement.readyState : 'no element',
+        videoPaused: videoElement ? videoElement.paused : 'no element',
+        videoEnded: videoElement ? videoElement.ended : 'no element',
+        intervalRunning: !!signLanguageIntervalRef.current
+      };
+      
+      console.log('[Sign Language] Checking recognition conditions:', conditions);
+      
+      if (signLanguageEnabled && hasLocalVideo && videoEnabled && hasLocalStream) {
+        // Only start if not already running
+        if (!signLanguageIntervalRef.current) {
+          console.log('[Sign Language] ✅ Starting recognition interval - all conditions met!');
+          // Start capturing frames every 500ms
+          signLanguageIntervalRef.current = setInterval(() => {
+            captureFrameAndRecognize();
+          }, 500);
+          console.log('[Sign Language] Recognition interval started, will capture frames every 500ms');
+        } else {
+          console.log('[Sign Language] Recognition interval already running, skipping start');
+        }
+      } else {
+        // Clear interval if disabled or conditions not met
+        if (signLanguageIntervalRef.current) {
+          console.log('[Sign Language] ❌ Stopping recognition interval - conditions not met:', conditions);
+          clearInterval(signLanguageIntervalRef.current);
+          signLanguageIntervalRef.current = null;
+        } else {
+          console.log('[Sign Language] ⚠️ Recognition not starting - conditions not met:', conditions);
+        }
+        // Reset state (but keep sentence - don't lose committed words)
+        if (!signLanguageEnabled) {
+          setSignLanguageCaption('');
+          setSignLanguageSequence('');
+          signLanguageSequenceRef.current = '';
+          setSignLanguageText('');
+          // Note: Don't clear signLanguageSentence - keep committed words
+          lastSignLanguagePredictionRef.current = '';
+          lastAddedLetterRef.current = '';
+          predictionHistoryRef.current = [];
+          stablePredictionRef.current = '';
+          stablePredictionStartTimeRef.current = null;
+        }
       }
-      // Reset state
-      setSignLanguageCaption('');
-      setSignLanguageSequence('');
-      setSignLanguageText('');
-      lastSignLanguagePredictionRef.current = '';
-      predictionHistoryRef.current = [];
-      stablePredictionRef.current = '';
-      stablePredictionStartTimeRef.current = null;
+    };
+
+    // Initial check
+    checkAndStartRecognition();
+
+    // Set up video element listeners to re-check when video becomes ready
+    const videoElement = localVideoRef.current;
+    const handleLoadedMetadata = () => {
+      console.log('[Sign Language] Video metadata loaded, re-checking recognition conditions');
+      checkAndStartRecognition();
+    };
+    const handleLoadedData = () => {
+      console.log('[Sign Language] Video data loaded, re-checking recognition conditions');
+      checkAndStartRecognition();
+    };
+
+    if (videoElement) {
+      videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+      videoElement.addEventListener('loadeddata', handleLoadedData);
     }
+
+    // Also check periodically (every 2 seconds) in case video becomes ready after effect runs
+    // This handles the case where video element gets srcObject after the effect has run
+    const periodicCheck = setInterval(() => {
+      if (signLanguageEnabled && !signLanguageIntervalRef.current) {
+        console.log('[Sign Language] Periodic check - signLanguageEnabled but interval not running, re-checking...');
+        checkAndStartRecognition();
+      }
+    }, 2000);
 
     return () => {
       if (signLanguageIntervalRef.current) {
@@ -1365,6 +1707,11 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
       if (signLanguageUpdateTimeoutRef.current) {
         clearTimeout(signLanguageUpdateTimeoutRef.current);
       }
+      if (videoElement) {
+        videoElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
+        videoElement.removeEventListener('loadeddata', handleLoadedData);
+      }
+      clearInterval(periodicCheck);
     };
   }, [signLanguageEnabled, videoEnabled, localStream]);
 
@@ -1411,11 +1758,13 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
   };
 
   // Always include local participant, even if stream is null
+  // Use localStreamRef.current as fallback to ensure we always have the latest stream reference
+  const localStreamForDisplay = localStream || localStreamRef.current;
   const allParticipants = [
     { 
       id: 'local', 
       socketId: socketRef.current?.id || 'local',
-      stream: localStream, 
+      stream: localStreamForDisplay, 
       userName: userName || 'You', 
       isLocal: true 
     },
@@ -1443,7 +1792,7 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
       <div className="flex-1 p-2 sm:p-4 overflow-hidden meeting-content">
         <div className="flex flex-col lg:flex-row gap-2 sm:gap-4 h-full max-w-7xl mx-auto">
           <div className="flex-1 overflow-auto min-h-0 pb-20 sm:pb-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 lg:gap-8">
               {allParticipants.map((participant) => {
                 // For local user, use socket.id if available, otherwise try both 'local' and socket.id
                 // For remote users, use their socketId
@@ -1454,41 +1803,58 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
                 let caption = captions.get(participantSocketId) || '';
                 
                 // Add sign language caption for local user
-                if (participant.isLocal && signLanguageEnabled && signLanguageSequence) {
-                  // Show both sequence and converted text
+                if (participant.isLocal && signLanguageEnabled) {
                   let signCaption = '';
-                  if (signLanguageText && signLanguageText !== signLanguageSequence.replace(/\s+/g, '')) {
-                    // If we have converted text that's different from raw sequence, show both
-                    signCaption = `[Sign: ${signLanguageSequence} → "${signLanguageText}"]`;
-                  } else {
-                    // Otherwise just show the sequence
-                    signCaption = `[Sign: ${signLanguageSequence}]`;
+                  
+                  // Show sentence if available
+                  if (signLanguageSentence.length > 0) {
+                    const sentenceText = signLanguageSentence.join(' ');
+                    signCaption = `[Sentence: "${sentenceText}"]`;
                   }
                   
-                  caption = caption 
-                    ? `${caption} ${signCaption}`
-                    : signCaption;
+                  // Show current word being built (just the sequence, no arrow or converted text)
+                  if (signLanguageSequence) {
+                    const wordCaption = `[Sign: ${signLanguageSequence}]`;
+                    signCaption = signCaption 
+                      ? `${signCaption} ${wordCaption}`
+                      : wordCaption;
+                  }
+                  
+                  if (signCaption) {
+                    caption = caption 
+                      ? `${caption} ${signCaption}`
+                      : signCaption;
+                  }
                   
                   // Debug logging for sign language
-                  console.log('[Sign Language Display] Sequence:', signLanguageSequence, 'Text:', signLanguageText, 'Full caption:', caption);
+                  console.log('[Sign Language Display] Sentence:', signLanguageSentence, 'Sequence:', signLanguageSequence, 'Text:', signLanguageText, 'Full caption:', caption);
                 }
                 
                 // Add sign language caption for remote participants
                 if (!participant.isLocal) {
                   const remoteSignData = remoteSignLanguage.get(participantSocketId);
-                  if (remoteSignData && remoteSignData.sequence) {
+                  if (remoteSignData) {
                     let signCaption = '';
-                    if (remoteSignData.text && remoteSignData.text !== remoteSignData.sequence.replace(/\s+/g, '')) {
-                      // If we have converted text that's different from raw sequence, show both
-                      signCaption = `[Sign: ${remoteSignData.sequence} → "${remoteSignData.text}"]`;
-                    } else {
-                      // Otherwise just show the sequence
-                      signCaption = `[Sign: ${remoteSignData.sequence}]`;
+                    
+                    // Show sentence if available
+                    if (remoteSignData.sentence && remoteSignData.sentence.length > 0) {
+                      const sentenceText = remoteSignData.sentence.join(' ');
+                      signCaption = `[Sentence: "${sentenceText}"]`;
                     }
                     
-                    caption = caption 
-                      ? `${caption} ${signCaption}`
-                      : signCaption;
+                    // Show current word being built (just the sequence, no arrow or converted text)
+                    if (remoteSignData.sequence) {
+                      const wordCaption = `[Sign: ${remoteSignData.sequence}]`;
+                      signCaption = signCaption 
+                        ? `${signCaption} ${wordCaption}`
+                        : wordCaption;
+                    }
+                    
+                    if (signCaption) {
+                      caption = caption 
+                        ? `${caption} ${signCaption}`
+                        : signCaption;
+                    }
                   }
                 }
                 
@@ -1640,7 +2006,22 @@ const MeetingRoom = ({ roomId, userName, onLeave }) => {
             onToggleAudio={handleToggleAudio}
             onToggleVideo={handleToggleVideo}
             onScreenShare={handleScreenShare}
-            onToggleSignLanguage={() => setSignLanguageEnabled(!signLanguageEnabled)}
+            onToggleSignLanguage={() => {
+              const newValue = !signLanguageEnabled;
+              console.log('[Sign Language] Button clicked! Toggling from', signLanguageEnabled, 'to', newValue);
+              console.log('[Sign Language] Current state at button click:', {
+                signLanguageEnabled,
+                videoEnabled,
+                hasLocalStream: !!(localStream || localStreamRef.current),
+                hasLocalVideo: !!(localVideoRef.current && localVideoRef.current.srcObject),
+                localStreamState: !!localStream,
+                localStreamRef: !!localStreamRef.current,
+                videoElement: !!localVideoRef.current,
+                videoSrcObject: !!(localVideoRef.current && localVideoRef.current.srcObject),
+                videoReadyState: localVideoRef.current ? localVideoRef.current.readyState : 'no element'
+              });
+              setSignLanguageEnabled(newValue);
+            }}
             onLeave={handleLeave}
           />
         </div>
